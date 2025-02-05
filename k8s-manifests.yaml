@@ -4,24 +4,32 @@ kind: ConfigMap
 metadata:
   name: metrics-server-config
 data:
-  metrics-server.py: |
+  main.py: |
     from fastapi import FastAPI
     from fastapi.responses import PlainTextResponse
     import os
+    import math
+    import time
 
     app = FastAPI()
 
     # Get configuration from environment variables
-    METRIC_VALUE = os.getenv("METRIC_VALUE", "30")
+    BASE_VALUE = float(os.getenv("METRIC_VALUE", "30"))
     METRIC_PATH = os.getenv("METRICS_PATH", "/metrics2")
 
+    def get_current_value():
+        # Calculate time-based sine variation (1-minute period)
+        t = time.time()
+        period = 60  # 1 minute in seconds
+        variation = BASE_VALUE * 0.1 * math.sin(2 * math.pi * (t % period) / period)
+        return BASE_VALUE + variation
 
     @app.get(METRIC_PATH, response_class=PlainTextResponse)
     async def metrics():
-        return f"""# HELP my_first_metric Some description of what my_first_metric means
+        current_value = get_current_value()
+        return f"""# HELP my_first_metric Metric with sine wave variation (±10% over 1 min)
     # TYPE my_first_metric gauge
-    my_first_metric {METRIC_VALUE}"""
-
+    my_first_metric {current_value:.2f}"""
 
     @app.get("/health")
     async def health_check():
@@ -33,7 +41,7 @@ kind: ConfigMap
 metadata:
   name: promdiscovery-config
 data:
-  promdiscovery.py: |
+  main.py: |
     from fastapi import FastAPI
     from fastapi.responses import JSONResponse
     import os
@@ -58,11 +66,11 @@ data:
         targets = [
             {
                 "targets": [
-                    "metrics-server-1.default.svc.cluster.local:9090",
-                    "metrics-server-2.default.svc.cluster.local:9090",
+                    "metrics-server-1.default.svc.cluster.local:80",
+                    "metrics-server-2.default.svc.cluster.local:80",
                 ],
                 "labels": {
-                    "__metrics_path__": METRICS_PATH,
+                    "metrics_path": METRICS_PATH,
                     "kubernetes_namespace": TARGET_NAMESPACE,
                 },
             }
@@ -128,7 +136,7 @@ spec:
     app: metrics-server
     instance: server1
   ports:
-  - port: 9090
+  - port: 80
     targetPort: 80
 ---
 # Metrics Server 2
@@ -183,7 +191,7 @@ spec:
     app: metrics-server
     instance: server2
   ports:
-  - port: 9090
+  - port: 80
     targetPort: 80
 ---
 # Service Discovery

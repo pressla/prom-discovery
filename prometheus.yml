@@ -1,21 +1,19 @@
 # my global config
 global:
-  scrape_interval: 5s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+  scrape_interval: 5s # Set the scrape interval to every 5 seconds
 
 scrape_configs:
-#  - job_name: 'retrieve_targets_from_file'
-#    file_sd_configs:
-#      - files:
-#        - "targets.json"
-#        refresh_interval: 10s
-#    relabel_configs:
-#      - source_labels: [__meta_http_sd_label_instance]
-#        target_label: instance
-
-    - job_name: 'retrieve_targets_from_api'
-      http_sd_configs:
-        - url: 'http://127.0.0.1:8123/targets'
-          refresh_interval: 10s
-      relabel_configs:
-        - source_labels: [__meta_http_sd_label_instance]
-          target_label: instance
+  - job_name: 'metrics-servers'
+    http_sd_configs:
+      - url: 'http://promdiscovery.default.svc:80/targets'
+        refresh_interval: 10s
+    relabel_configs:
+      # Use the metrics path from the service discovery
+      - source_labels: [__meta_http_sd_label___metrics_path__]
+        target_label: __metrics_path__
+      # Add kubernetes namespace as a label
+      - source_labels: [__meta_http_sd_label_kubernetes_namespace]
+        target_label: kubernetes_namespace
+      # Add instance label from the target
+      - source_labels: [__address__]
+        target_label: instance
