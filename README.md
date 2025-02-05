@@ -1,269 +1,281 @@
-# Deploying Prometheus Service Discovery in Kubernetes
+# Prometheus Service Discovery with Dynamic Metrics
 
-This guide explains how to deploy the Prometheus service discovery server in a Kubernetes cluster.
+This guide explains how to deploy a Prometheus service discovery setup with dynamic metrics generation in Kubernetes.
+
+## Features
+
+- Two metrics servers generating sine wave variations:
+  - Server 1: Base value 30 with ±10% variation
+  - Server 2: Base value 50 with ±10% variation
+- 1-minute period for sine wave
+- Automatic service discovery
+- Prometheus integration with proper path handling
 
 ## Prerequisites
 
 - A running Kubernetes cluster
 - kubectl configured to access your cluster
-- Prometheus running in your cluster
+- Prometheus Operator installed in your cluster
 
 ## Deployment
 
-You can deploy all components at once using the provided manifest file:
+Deploy all components using the provided manifest:
 
 ```bash
 kubectl apply -f k8s-manifests.yaml
 ```
 
-This will create:
-- ConfigMaps for both the metrics server and service discovery
-- Two metrics server deployments (server1 with value 30, server2 with value 50)
-- Service discovery deployment with its service
+This creates:
+- Two metrics servers with sine wave variation
+  - metrics-server-1: Base value 30 (±10%)
+  - metrics-server-2: Base value 50 (±10%)
+- Service discovery deployment (promdiscovery)
+- Required ConfigMaps and Services
 
-Alternatively, you can deploy components individually:
+## Prometheus Configuration
 
-```bash
-# Deploy first metrics server
-cat <<EOF | kubectl apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: metrics-server-1
-  labels:
-    app: metrics-server
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: metrics-server
-      instance: server1
-  template:
-    metadata:
-      labels:
-        app: metrics-server
-        instance: server1
-    spec:
-      containers:
-      - name: metrics-server
-        image: tiangolo/uvicorn-gunicorn-fastapi:python3.9
-        ports:
-        - containerPort: 80
-        volumeMounts:
-        - name: config-volume
-          mountPath: /app
-        env:
-        - name: METRIC_VALUE
-          value: "30"
-        - name: METRICS_PATH
-          value: "/metrics2"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 80
-          initialDelaySeconds: 5
-          periodSeconds: 10
-      volumes:
-      - name: config-volume
-        configMap:
-          name: metrics-server-config
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: metrics-server-1
-spec:
-  selector:
-    app: metrics-server
-    instance: server1
-  ports:
-  - port: 9090
-    targetPort: 80
-EOF
-```
-
-3. Deploy the second metrics server:
-
-```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: metrics-server-2
-  labels:
-    app: metrics-server
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: metrics-server
-      instance: server2
-  template:
-    metadata:
-      labels:
-        app: metrics-server
-        instance: server2
-    spec:
-      containers:
-      - name: metrics-server
-        image: tiangolo/uvicorn-gunicorn-fastapi:python3.9
-        ports:
-        - containerPort: 80
-        volumeMounts:
-        - name: config-volume
-          mountPath: /app
-        env:
-        - name: METRIC_VALUE
-          value: "50"
-        - name: METRICS_PATH
-          value: "/metrics2"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 80
-          initialDelaySeconds: 5
-          periodSeconds: 10
-      volumes:
-      - name: config-volume
-        configMap:
-          name: metrics-server-config
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: metrics-server-2
-spec:
-  selector:
-    app: metrics-server
-    instance: server2
-  ports:
-  - port: 9090
-    targetPort: 80
-EOF
-```
-
-## Deploy Service Discovery
-
-
-1. Create a ConfigMap for the service discovery script:
-
-```bash
-kubectl create configmap promdiscovery-config --from-file=promdiscovery.py
-```bash
-
-2. Create the deployment:
-
-```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: promdiscovery
-  labels:
-    app: promdiscovery
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: promdiscovery
-  template:
-    metadata:
-      labels:
-        app: promdiscovery
-    spec:
-      containers:
-      - name: promdiscovery
-        image: tiangolo/uvicorn-gunicorn-fastapi:python3.9
-        ports:
-        - containerPort: 80
-        volumeMounts:
-        - name: config-volume
-          mountPath: /app
-        env:
-        - name: METRICS_PATH
-          value: "/metrics2"
-        - name: TARGET_NAMESPACE
-          value: "default"
-        - name: TARGET_PORT
-          value: "9090"
-        - name: TARGET_SELECTOR
-          value: "app=metrics-server"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 80
-          initialDelaySeconds: 5
-          periodSeconds: 10
-      volumes:
-      - name: config-volume
-        configMap:
-          name: promdiscovery-config
-EOF
-```
-
-3. Create a service for the discovery server:
-
-```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Service
-metadata:
-  name: promdiscovery
-spec:
-  selector:
-    app: promdiscovery
-  ports:
-  - port: 80
-    targetPort: 80
-EOF
-```
-
-4. Update your Prometheus configuration to use the service discovery endpoint:
+Update your Prometheus configuration using the provided values file:
 
 ```yaml
-scrape_configs:
-  - job_name: 'kubernetes-service-discovery'
-    http_sd_configs:
-      - url: 'http://promdiscovery.default.svc.cluster.local/targets'
-        refresh_interval: 10s
-    relabel_configs:
-      - source_labels: [__meta_http_sd_label_instance]
-        target_label: instance
+# myprom.yaml
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 5s  # Frequent scraping for smooth sine wave
+    additionalScrapeConfigs:
+      - job_name: 'metrics-servers'
+        http_sd_configs:
+          - url: 'http://promdiscovery.default.svc:80/targets'
+            refresh_interval: 10s
+        metrics_path: /metrics2  # Default metrics path
+        relabel_configs:
+          - source_labels: [metrics_path]
+            regex: '(.+)'
+            target_label: __metrics_path__
+            action: replace
+          - source_labels: [__meta_http_sd_label_kubernetes_namespace]
+            target_label: kubernetes_namespace
+          - source_labels: [__address__]
+            target_label: instance
 ```
 
-## Verify the Deployment
+Apply the configuration:
 
-1. Check if the deployment is running:
 ```bash
-kubectl get deployments promdiscovery
+# Replace 'prometheus' with your release name if different
+helm upgrade prometheus prometheus-community/kube-prometheus-stack -n monitoring -f myprom.yaml
 ```
 
-2. Check the pods:
+## Verification
+
+1. Check if all pods are running:
 ```bash
-kubectl get pods -l app=promdiscovery
+kubectl get pods -l 'app in (metrics-server,promdiscovery)'
 ```
 
-3. View the logs:
+2. Verify metrics endpoints:
 ```bash
-kubectl logs -l app=promdiscovery
+# Check metrics-server-1 (should return ~30 ±10%)
+kubectl run curl-test-1 --rm -i --tty --restart=Never --image=curlimages/curl -- \
+  curl -s http://metrics-server-1.default.svc.cluster.local/metrics2
+
+# Check metrics-server-2 (should return ~50 ±10%)
+kubectl run curl-test-2 --rm -i --tty --restart=Never --image=curlimages/curl -- \
+  curl -s http://metrics-server-2.default.svc.cluster.local/metrics2
 ```
+
+3. Check service discovery:
+```bash
+kubectl exec -it $(kubectl get pod -l app=promdiscovery -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -s localhost/targets
+```
+
+## Architecture
+
+### Component Communication
+
+```plantuml
+@startuml
+skinparam componentStyle rectangle
+
+component "Prometheus" as prom
+component "Service Discovery" as sd
+component "metrics-server-1\n(30 ±10%)" as ms1
+component "metrics-server-2\n(50 ±10%)" as ms2
+
+' Discovery flow
+prom -down-> sd : 1. Query targets
+sd -up-> prom : 2. Return list
+
+' Scraping flow
+prom -down-> ms1 : 3. Scrape /metrics2
+prom -down-> ms2 : 3. Scrape /metrics2
+
+note right of sd
+  Returns:
+  - Target addresses
+  - Metrics paths
+  - Labels
+end note
+@enduml
+```
+
+### Components
+
+1. **Metrics Servers**
+   - FastAPI applications generating sine wave metrics
+   - Each server varies its metric by ±10% over a 1-minute period
+   - Exposed on port 80 at path /metrics2
+
+2. **Service Discovery**
+   - FastAPI application providing target discovery for Prometheus
+   - Returns list of available metrics servers
+   - Handles proper labeling for metrics path
+
+3. **Prometheus**
+   - Scrapes metrics every 5s for smooth sine wave visualization
+   - Uses HTTP service discovery to find targets
+   - Properly handles metrics path through relabeling
+
+## Implementation Details
+
+### Metrics Server Code
+
+The metrics server generates a sine wave variation of its base value over a 1-minute period:
+- Server 1: Base value 30 varies between 27-33
+- Server 2: Base value 50 varies between 45-55
+
+The sine wave ensures smooth transitions and predictable patterns for testing monitoring systems.
+
+
+```python
+from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
+import os
+import math
+import time
+
+app = FastAPI()
+
+# Get configuration from environment variables
+BASE_VALUE = float(os.getenv("METRIC_VALUE", "30"))
+METRIC_PATH = os.getenv("METRICS_PATH", "/metrics2")
+
+def get_current_value():
+    # Calculate time-based sine variation (1-minute period)
+    t = time.time()
+    period = 60  # 1-minute period
+    # Calculate variation: ±10% of base value using sine wave
+    variation = BASE_VALUE * 0.1 * math.sin(2 * math.pi * (t % period) / period)
+    return BASE_VALUE + variation
+
+@app.get(METRIC_PATH, response_class=PlainTextResponse)
+async def metrics():
+    current_value = get_current_value()
+    return f"""# HELP my_first_metric Metric with sine wave variation (±10% over 1 min)
+# TYPE my_first_metric gauge
+my_first_metric {current_value:.2f}"""
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+```
+
+#### Code Explanation
+
+1. **Configuration**
+   - `BASE_VALUE`: The center point for the sine wave (30 or 50)
+   - `METRIC_PATH`: The endpoint path for metrics (/metrics2)
+
+2. **Sine Wave Generation**
+   - Uses `time.time()` for continuous progression
+   - 60-second period for one complete wave
+   - Variation is ±10% of base value
+  
+
+3. **Metrics Endpoint**
+   - Returns Prometheus-formatted metric
+   - Includes help and type information
+   - Value formatted to 2 decimal places
+
+4. **Health Check**
+   - Simple endpoint for liveness probe
+   - Returns status "healthy"
+
+### Service Discovery Code
+
+The service discovery component provides target information to Prometheus in the required HTTP SD format:
+
+```python
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+import os
+
+app = FastAPI()
+
+# Get configuration from environment variables
+METRICS_PATH = os.getenv("METRICS_PATH", "/metrics2")
+TARGET_NAMESPACE = os.getenv("TARGET_NAMESPACE", "default")
+TARGET_SELECTOR = os.getenv("TARGET_SELECTOR", "app=metrics-server")
+
+@app.get("/targets", response_class=JSONResponse)
+async def get_targets():
+    # Return static targets for demonstration
+    # In production, use the Kubernetes API to discover pods
+    targets = [
+        {
+            "targets": [
+                "metrics-server-1.default.svc.cluster.local:80",
+                "metrics-server-2.default.svc.cluster.local:80",
+            ],
+            "labels": {
+                "metrics_path": METRICS_PATH,
+                "kubernetes_namespace": TARGET_NAMESPACE,
+            },
+        }
+    ]
+    return targets
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+```
+
+#### Code Explanation
+
+1. **Target Format**
+   - Returns targets in Prometheus HTTP SD format
+   - Uses service DNS names for reliability
+   - Includes port 80 for direct access
+
+2. **Labels**
+   - metrics_path: Used by Prometheus relabeling
+   - kubernetes_namespace: For target identification
+   - Labels are used to configure scraping
+
+3. **Production Use**
+   - Replace static targets with Kubernetes API
+   - Use label selectors to find pods
+   - Add error handling and retries
 
 ## Configuration
 
-The service discovery server can be configured using the following environment variables:
+### Metrics Servers
 
-- `METRICS_PATH`: The path where metrics are exposed (default: "/metrics2")
-- `TARGET_NAMESPACE`: The namespace to look for targets (default: "default")
-- `TARGET_PORT`: The port where metrics are exposed (default: "9090")
-- `TARGET_SELECTOR`: The label selector for finding target pods (default: "app=metrics-server")
+Environment variables:
+- `METRIC_VALUE`: Base value for sine wave (default: "30")
+- `METRICS_PATH`: Path where metrics are exposed (default: "/metrics2")
 
-You can modify these values in the deployment YAML as needed.
+### Service Discovery
+
+Environment variables:
+- `METRICS_PATH`: Path where metrics are exposed (default: "/metrics2")
+- `TARGET_NAMESPACE`: Namespace to look for targets (default: "default")
+- `TARGET_SELECTOR`: Label selector for finding targets (default: "app=metrics-server")
 
 ## Cleanup
 
-To remove all deployments:
+Remove all components:
 
 ```bash
-kubectl delete deployment promdiscovery metrics-server-1 metrics-server-2
-kubectl delete service promdiscovery metrics-server-1 metrics-server-2
-kubectl delete configmap promdiscovery-config metrics-server-config
+kubectl delete -f k8s-manifests.yaml
+```
