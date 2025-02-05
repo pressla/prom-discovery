@@ -1,0 +1,243 @@
+# ConfigMaps
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metrics-server-config
+data:
+  metrics-server.py: |
+    from fastapi import FastAPI
+    from fastapi.responses import PlainTextResponse
+    import os
+
+    app = FastAPI()
+
+    # Get configuration from environment variables
+    METRIC_VALUE = os.getenv("METRIC_VALUE", "30")
+    METRIC_PATH = os.getenv("METRICS_PATH", "/metrics2")
+
+
+    @app.get(METRIC_PATH, response_class=PlainTextResponse)
+    async def metrics():
+        return f"""# HELP my_first_metric Some description of what my_first_metric means
+    # TYPE my_first_metric gauge
+    my_first_metric {METRIC_VALUE}"""
+
+
+    @app.get("/health")
+    async def health_check():
+        return {"status": "healthy"}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promdiscovery-config
+data:
+  promdiscovery.py: |
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+    import os
+
+    app = FastAPI()
+
+    # Get configuration from environment variables with defaults
+    METRICS_PATH = os.getenv("METRICS_PATH", "/metrics2")
+    TARGET_NAMESPACE = os.getenv("TARGET_NAMESPACE", "default")
+    TARGET_PORT = os.getenv("TARGET_PORT", "9090")
+    TARGET_SELECTOR = os.getenv("TARGET_SELECTOR", "app=metrics-server")
+
+
+    @app.get("/targets", response_class=JSONResponse)
+    async def get_targets():
+        # In a real implementation, you would:
+        # 1. Use the Kubernetes API to discover pods matching the selector in the specified namespace
+        # 2. Format their IPs and ports as targets for Prometheus
+
+        # For demonstration, returning static targets
+        # In production, use the kubernetes client library to discover pods dynamically
+        targets = [
+            {
+                "targets": [
+                    "metrics-server-1.default.svc.cluster.local:9090",
+                    "metrics-server-2.default.svc.cluster.local:9090",
+                ],
+                "labels": {
+                    "__metrics_path__": METRICS_PATH,
+                    "kubernetes_namespace": TARGET_NAMESPACE,
+                },
+            }
+        ]
+
+        return targets
+
+
+    @app.get("/health")
+    async def health_check():
+        return {"status": "healthy"}
+
+---
+# Metrics Server 1
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-server-1
+  labels:
+    app: metrics-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics-server
+      instance: server1
+  template:
+    metadata:
+      labels:
+        app: metrics-server
+        instance: server1
+    spec:
+      containers:
+      - name: metrics-server
+        image: tiangolo/uvicorn-gunicorn-fastapi:python3.9
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app
+        env:
+        - name: METRIC_VALUE
+          value: "30"
+        - name: METRICS_PATH
+          value: "/metrics2"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config-volume
+        configMap:
+          name: metrics-server-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics-server-1
+spec:
+  selector:
+    app: metrics-server
+    instance: server1
+  ports:
+  - port: 9090
+    targetPort: 80
+---
+# Metrics Server 2
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-server-2
+  labels:
+    app: metrics-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics-server
+      instance: server2
+  template:
+    metadata:
+      labels:
+        app: metrics-server
+        instance: server2
+    spec:
+      containers:
+      - name: metrics-server
+        image: tiangolo/uvicorn-gunicorn-fastapi:python3.9
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app
+        env:
+        - name: METRIC_VALUE
+          value: "50"
+        - name: METRICS_PATH
+          value: "/metrics2"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config-volume
+        configMap:
+          name: metrics-server-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics-server-2
+spec:
+  selector:
+    app: metrics-server
+    instance: server2
+  ports:
+  - port: 9090
+    targetPort: 80
+---
+# Service Discovery
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: promdiscovery
+  labels:
+    app: promdiscovery
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: promdiscovery
+  template:
+    metadata:
+      labels:
+        app: promdiscovery
+    spec:
+      containers:
+      - name: promdiscovery
+        image: tiangolo/uvicorn-gunicorn-fastapi:python3.9
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app
+        env:
+        - name: METRICS_PATH
+          value: "/metrics2"
+        - name: TARGET_NAMESPACE
+          value: "default"
+        - name: TARGET_PORT
+          value: "9090"
+        - name: TARGET_SELECTOR
+          value: "app=metrics-server"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config-volume
+        configMap:
+          name: promdiscovery-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: promdiscovery
+spec:
+  selector:
+    app: promdiscovery
+  ports:
+  - port: 80
+    targetPort: 80
